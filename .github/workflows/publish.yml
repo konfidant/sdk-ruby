@@ -23,7 +23,7 @@ jobs:
     - name: Set version from tag
       run: |
         TAG="${GITHUB_REF#refs/tags/v}"
-        sed -i "s/VERSION = \".*\"/VERSION = \"${TAG}\"/" lib/holidays_rest/version.rb
+        sed -i "s/VERSION = \".*\"/VERSION = \"${TAG}\"/" lib/konfidant/version.rb
 
     - name: Publish to GPR
       run: |
