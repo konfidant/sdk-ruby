@@ -25,7 +25,7 @@ jobs:
           bundler-cache: true
 
       - name: Run tests
-        run: bundle exec ruby -Itest -e 'Dir["test/test_*.rb"].each { require File.expand_path(_1) }'
+        run: bundle exec rspec
 
       - name: Upload coverage to Codacy
         if: matrix.ruby == '3.4'

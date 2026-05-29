@@ -1,5 +1,8 @@
 # konfidant-ruby
 
+[![Test](https://github.com/konfidant/sdk-ruby/actions/workflows/test.yml/badge.svg)](https://github.com/konfidant/sdk-ruby/actions/workflows/test.yml)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/eb3798f7eb59412abc2bd3ce307760b5)](https://app.codacy.com/gh/konfidant/sdk-ruby/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
+
 Official Ruby SDK for the [Konfidant](https://www.konfidant.app) API.
 
 Konfidant lets you share secrets — encrypted text and files — that self-destruct after being read.
