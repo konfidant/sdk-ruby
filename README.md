@@ -176,8 +176,8 @@ end
 
 Poll the encryption status of an uploaded file.
 
-| Argument   | Type     | Description                                  |
-|------------|----------|----------------------------------------------|
+| Argument   | Type     | Description                                   |
+|------------|----------|-----------------------------------------------|
 | `file_key` | `String` | The `file_key` from the `share_file` response |
 
 Returns a `Konfidant::FileStatusResponse`:
@@ -214,24 +214,24 @@ Returns a `Konfidant::ListSharesResponse`:
 
 Each `Konfidant::Share`:
 
-| Field            | Type          | Description                    |
-|------------------|---------------|--------------------------------|
-| `type`           | `String`      | `"file"` or `"text"`           |
-| `file_name`      | `String`      | Filename or text label         |
-| `file_size_bytes`| `Integer`     | Size in bytes                  |
-| `created_at`     | `String`      | Creation datetime              |
-| `expires_at`     | `String`      | Expiry datetime                |
-| `accessed_at`    | `String, nil` | Access datetime, or nil        |
-| `created_by`     | `String`      | Email of creator               |
+| Field            | Type          | Description             |
+|------------------|---------------|-------------------------|
+| `type`           | `String`      | `"file"` or `"text"`    |
+| `file_name`      | `String`      | Filename or text label  |
+| `file_size_bytes`| `Integer`     | Size in bytes           |
+| `created_at`     | `String`      | Creation datetime       |
+| `expires_at`     | `String`      | Expiry datetime         |
+| `accessed_at`    | `String, nil` | Access datetime, or nil |
+| `created_by`     | `String`      | Email of creator        |
 
 `Konfidant::Pagination`:
 
-| Field      | Type      | Description                  |
-|------------|-----------|------------------------------|
-| `total`    | `Integer` | Total number of shares       |
-| `limit`    | `Integer` | Page size used               |
-| `offset`   | `Integer` | Offset used                  |
-| `has_more` | `Boolean` | Whether more pages exist     |
+| Field      | Type      | Description              |
+|------------|-----------|--------------------------|
+| `total`    | `Integer` | Total number of shares   |
+| `limit`    | `Integer` | Page size used           |
+| `offset`   | `Integer` | Offset used              |
+| `has_more` | `Boolean` | Whether more pages exist |
 
 #### Example: list shares
 
@@ -264,15 +264,15 @@ client.share_and_upload_file(
 )
 ```
 
-| Argument        | Type      | Default | Description                           |
-|-----------------|-----------|---------|---------------------------------------|
-| `io`            | `IO`      | —       | Readable IO object (File, StringIO)   |
-| `size`          | `Integer` | —       | File size in bytes                    |
-| `filename`      | `String`  | —       | Filename with extension               |
-| `content_type`  | `String`  | —       | MIME type                             |
-| `ttl_hours`     | `Integer` | —       | Time-to-live in hours                 |
-| `poll_interval` | `Numeric` | `2`     | Seconds between status checks         |
-| `timeout`       | `Numeric` | `60`    | Max seconds to wait for encryption    |
+| Argument        | Type      | Default | Description                         |
+|-----------------|-----------|---------|-------------------------------------|
+| `io`            | `IO`      | —       | Readable IO object (File, StringIO) |
+| `size`          | `Integer` | —       | File size in bytes                  |
+| `filename`      | `String`  | —       | Filename with extension             |
+| `content_type`  | `String`  | —       | MIME type                           |
+| `ttl_hours`     | `Integer` | —       | Time-to-live in hours               |
+| `poll_interval` | `Numeric` | `2`     | Seconds between status checks       |
+| `timeout`       | `Numeric` | `60`    | Max seconds to wait for encryption  |
 
 Returns a `Konfidant::ShareResult`:
 
@@ -283,8 +283,8 @@ Returns a `Konfidant::ShareResult`:
 | `expires_at`   | `String`  | Expiry datetime                |
 | `verified_burn`| `Boolean` | Whether burn-on-read is active |
 
-Raises `RuntimeError` with `"konfidant: encryption timed out after Ns"` if encryption does not
-complete within `timeout` seconds.
+Raises `RuntimeError` with `"konfidant: encryption timed out after Ns"` if encryption does not complete
+within `timeout` seconds.
 
 #### Example: share and upload file
 
@@ -333,9 +333,8 @@ end
 ## Development
 
 ```bash
-bundle install          # install dependencies
-bundle exec rspec       # run tests
-bundle exec rspec --format progress  # compact output
+bundle install    # install dependencies
+bundle exec rspec # run tests
 ```
 
 ### Requirements
