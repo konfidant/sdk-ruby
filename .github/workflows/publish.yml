@@ -19,7 +19,12 @@ jobs:
     - name: Set up Ruby 3.4.9
       uses: ruby/setup-ruby@v1
       with:
-        ruby-version: 3.4.9
+        ruby-version: ruby
+
+    - name: Install gems
+      run: |
+        bundle config set --local without 'development test'
+        bundle install
 
     - name: Set version from tag
       run: |
