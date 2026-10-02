@@ -113,6 +113,8 @@ the upload, then poll `get_file_status` for the share link.
 | `file_size` | `Integer` | File size in bytes               |
 | `ttl_hours` | `Integer` | Time-to-live in hours            |
 
+> Maximum file size is **80 MB** (Premium and Enterprise). Larger files are rejected with a `400` error before upload.
+
 Returns a `Konfidant::ShareFileResponse`:
 
 | Field              | Type                          | Description                                     |
