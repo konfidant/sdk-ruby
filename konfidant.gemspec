@@ -5,7 +5,7 @@ Gem::Specification.new do |spec|
   spec.version  = Konfidant::VERSION
   spec.authors  = ['Konfidant']
   spec.email    = ['hello@konfidant.app']
-  spec.summary  = 'Official Ruby SDK for the Konfidant API'
+  spec.summary  = 'Official Ruby SDK for the Konfidant API (client-side, zero-knowledge encryption)'
   spec.homepage = 'https://github.com/konfidant/sdk-ruby'
   spec.license  = 'MIT'
 

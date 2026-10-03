@@ -6,29 +6,34 @@
 
 Official Ruby SDK for the [Konfidant](https://www.konfidant.app) API.
 
-Konfidant lets you share secrets — encrypted text and files — that self-destruct after being read.
+Konfidant lets you share secrets — text and files — that self-destruct after being read.
+
+## Zero-knowledge model
+
+All content is **encrypted on your machine** before anything is sent:
+
+- Every share gets a fresh random 256-bit key. Text, file bytes, file name and MIME type are encrypted together
+  with AES-256-GCM in the chunked KNF1
+  format (stdlib `OpenSSL` only).
+- Konfidant receives only ciphertext and its size. It never sees the key, the content or the file name.
+- The key lives **only in the share link's URL fragment**: `https://download.konfidant.app/#t=<token>&k=<key>`.
+  Browsers never send the fragment to a server. The `t` token is single-use, so the ciphertext can be fetched once.
+- Anyone holding the full `share_url` can read the secret once — treat it like the secret itself. If you lose it,
+  the content cannot be recovered by anyone, including Konfidant.
 
 ---
 
 ## Installation
 
-Add to your `Gemfile`:
-
 ```ruby
 gem 'konfidant'
 ```
 
-Then run:
-
 ```bash
-bundle install
+bundle install   # or: gem install konfidant
 ```
 
-Or install directly:
-
-```bash
-gem install konfidant
-```
+Requires Ruby >= 3.2. No runtime dependencies (stdlib `net/http`, `openssl`, `json`).
 
 ---
 
@@ -37,309 +42,166 @@ gem install konfidant
 ```ruby
 require 'konfidant'
 
-client = Konfidant::Client.new(api_key: 'your-api-key')
-
-result = client.share_text(text: 'super-secret-password', ttl_hours: 24)
-
-puts "Share this link: #{result.share_url}"
-```
-
----
-
-## Authentication
-
-All requests require a Bearer API key. Generate one from the [Konfidant dashboard](https://www.konfidant.app).
-
-```ruby
 client = Konfidant::Client.new(api_key: ENV['KONFIDANT_API_KEY'])
+
+text = client.share_text(text: 'db-password: hunter2', ttl_hours: 24)
+puts text.share_url
+
+file = File.open('contract.pdf', 'rb') do |f|
+  client.share_file(content: f, filename: 'contract.pdf', content_type: 'application/pdf', ttl_hours: 48)
+end
+puts file.share_url
 ```
 
 ---
 
-## API Reference
+## API reference
 
-### `Konfidant::Client.new`
+### `Konfidant::Client.new(api_key:, base_url: nil, http_timeout: 120)`
 
 | Option         | Type      | Required | Description                                                          |
 |----------------|-----------|----------|----------------------------------------------------------------------|
-| `api_key`      | `String`  | Yes      | Your Konfidant API key                                               |
-| `base_url`     | `String`  | No       | Override the base URL (default: `https://www.konfidant.app`)         |
+| `api_key`      | `String`  | Yes      | Your Konfidant API key (sent as `Authorization: Bearer …`)           |
+| `base_url`     | `String`  | No       | Override the API base URL (default: `https://www.konfidant.app`)     |
 | `http_timeout` | `Integer` | No       | Per-request HTTP timeout in seconds (default: `120`; `nil` disables) |
 
 Raises `ArgumentError` if `api_key` is nil or empty.
 
----
+### `client.share_text(text:, ttl_hours: nil)` → `Konfidant::TextShare`
 
-### `client.share_text(text:, ttl_hours:)`
+Encrypts `text` (UTF-8, no SDK-side size limit; your plan's limit applies server-side) and uploads the ciphertext.
+`ttl_hours` is omitted from the request when `nil` (server default applies).
 
-Encrypt and share a text message.
+| Field        | Type          | Description                                    |
+|--------------|---------------|------------------------------------------------|
+| `share_url`  | `String`      | One-time link **including the key** (`&k=…`)   |
+| `text_id`    | `String, nil` | Text ID (`nil` when verified burn is disabled) |
+| `expires_at` | `String`      | ISO 8601 expiry                                |
 
-| Argument    | Type      | Description              |
-|-------------|-----------|--------------------------|
-| `text`      | `String`  | The secret text to share |
-| `ttl_hours` | `Integer` | Time-to-live in hours    |
+### `client.share_file(content:, filename:, content_type: '', ttl_hours: nil)` → `Konfidant::FileShare`
 
-Returns a `Konfidant::ShareTextResponse`:
+Encrypts and shares a file in one call: encrypt → `create_file_upload` → `upload_ciphertext` → `complete_file_upload`.
 
-| Field          | Type      | Description                                 |
-|----------------|-----------|---------------------------------------------|
-| `text_id`      | `String`  | Unique ID of the shared text                |
-| `share_url`    | `String`  | One-time download link to send to recipient |
-| `expires_at`   | `String`  | Expiry datetime                             |
-| `verified_burn`| `Boolean` | Whether burn-on-read is verified            |
+| Argument       | Type         | Description                                                                         |
+|----------------|--------------|-------------------------------------------------------------------------------------|
+| `content`      | `String, IO` | File bytes, or a readable IO. `File`/`StringIO` are streamed chunk by chunk; other IOs are read into memory |
+| `filename`     | `String`     | Original file name, at most 1 024 UTF-8 bytes (encrypted)                           |
+| `content_type` | `String`     | MIME type, at most 255 bytes, may be empty (encrypted)                              |
+| `ttl_hours`    | `Integer`    | Time-to-live in hours (optional)                                                    |
 
-#### Example: share text
+| Field           | Type          | Description                                  |
+|-----------------|---------------|----------------------------------------------|
+| `share_url`     | `String`      | One-time link **including the key** (`&k=…`) |
+| `file_id`       | `String, nil` | File ID (`nil` when verified burn is off)    |
+| `expires_at`    | `String`      | ISO 8601 expiry                              |
+| `verified_burn` | `Boolean`     | Whether verified burn is enabled             |
 
-```ruby
-result = client.share_text(text: 'db-password: hunter2', ttl_hours: 48)
+### Low-level file flow
 
-puts result.share_url    # send to recipient
-puts result.expires_at
-puts result.verified_burn
-```
-
----
-
-### `client.share_file(filename:, file_size:, ttl_hours:)`
-
-Request a presigned upload URL for a file. Use the returned response with `upload_file` to complete
-the upload, then poll `get_file_status` for the share link.
-
-> For a one-call convenience wrapper, see [`share_and_upload_file`](#clientshare_and_upload_file).
-
-| Argument    | Type      | Description                      |
-|-------------|-----------|----------------------------------|
-| `filename`  | `String`  | Original filename with extension |
-| `file_size` | `Integer` | File size in bytes               |
-| `ttl_hours` | `Integer` | Time-to-live in hours            |
-
-> Maximum file size is **80 MB** (Premium and Enterprise). Larger files are rejected with a `400` error before upload.
-
-Returns a `Konfidant::ShareFileResponse`:
-
-| Field              | Type                          | Description                                     |
-|--------------------|-------------------------------|-------------------------------------------------|
-| `upload_url`       | `String`                      | Short-lived presigned S3 PUT URL                |
-| `file_key`         | `String`                      | Use with `get_file_status` and `upload_file`    |
-| `poll_url`         | `String`                      | Convenience URL for status polling              |
-| `metadata_headers` | `Konfidant::FileMetadataHeaders` | Required S3 headers — passed by `upload_file` |
-
----
-
-### `client.upload_file(io:, size:, content_type:, presigned:)`
-
-Upload file bytes to the presigned S3 URL from `share_file`. Automatically attaches the required
-S3 metadata headers. Does **not** send the Konfidant `Authorization` header to S3.
-
-| Argument       | Type                        | Description                           |
-|----------------|-----------------------------|---------------------------------------|
-| `io`           | `IO`                        | Readable IO object (File, StringIO)   |
-| `size`         | `Integer`                   | Content-Length in bytes               |
-| `content_type` | `String`                    | MIME type (e.g. `application/pdf`)    |
-| `presigned`    | `Konfidant::ShareFileResponse` | Full response from `share_file`    |
-
-Returns `nil` on success. Raises `Konfidant::ApiError` on S3 error.
-
-#### Example: manual three-step flow
+Use these when you need control over each step (e.g. your own retry logic).
 
 ```ruby
-file = File.open('report.pdf', 'rb')
-size = File.size('report.pdf')
+key       = Konfidant::Knf.generate_key
+encryptor = Konfidant::Knf.encryptor(key: key, content: File.open('a.zip', 'rb'), kind: 'file',
+                                     name: 'a.zip', mime: 'application/zip')
 
-# Step 1 – get presigned URL
-presigned = client.share_file(
-  filename:  'report.pdf',
-  file_size: size,
-  ttl_hours: 72
-)
+upload = client.create_file_upload(ciphertext_size: encryptor.size, ttl_hours: 24)
+client.upload_ciphertext(upload: upload, ciphertext: encryptor)   # String or IO-like
+done   = client.complete_file_upload(file_key: upload.file_key)
 
-# Step 2 – upload to S3
-client.upload_file(
-  io:           file,
-  size:         size,
-  content_type: 'application/pdf',
-  presigned:    presigned
-)
-
-# Step 3 – poll for share link
-loop do
-  status = client.get_file_status(presigned.file_key)
-  if status.status == 'complete'
-    puts "Share URL: #{status.share_url}"
-    break
-  end
-  sleep 2
-end
+share_url = Konfidant::Knf.build_share_url(done.download_url, key)
 ```
 
----
+| Method                                              | Request                                          | Returns                                                                                 |
+|-----------------------------------------------------|--------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `create_file_upload(ciphertext_size:, ttl_hours:)`  | `POST /api/v1/files`                             | `FileUpload(upload_url, file_key, upload_headers, upload_expires_in, ciphertext_size)` |
+| `upload_ciphertext(upload:, ciphertext:)`           | `PUT upload_url` with exactly `upload_headers`   | `nil`; never sends the API key                                                          |
+| `complete_file_upload(file_key:)`                   | `POST /api/v1/files/{file_key}/complete`         | `CompletedUpload(download_url, file_id, expires_at, verified_burn)`                    |
 
-### `client.get_file_status(file_key)`
+`complete_file_upload` raises `ApiError` with status `409` and message `upload_incomplete` if the PUT did not land.
+`download_url` contains only the token — append the key with `Knf.build_share_url` before sending it to anyone.
 
-Poll the encryption status of an uploaded file.
+### `client.open_share(share_url)` → `Konfidant::OpenedShare`
 
-| Argument   | Type     | Description                                   |
-|------------|----------|-----------------------------------------------|
-| `file_key` | `String` | The `file_key` from the `share_file` response |
+Recipient side. Sends only the token (`POST https://<link host>/api/download`, no API key, no decryption key),
+receives the ciphertext and decrypts it locally. Opening a share **consumes it**.
 
-Returns a `Konfidant::FileStatusResponse`:
+| Field  | Type          | Description                                 |
+|--------|---------------|---------------------------------------------|
+| `kind` | `String`      | `"text"` or `"file"`                        |
+| `name` | `String`      | File name (`""` for text)                   |
+| `mime` | `String`      | MIME type (`""` for text)                   |
+| `data` | `String`      | Decrypted bytes (binary / ASCII-8BIT)       |
+| `text` | `String, nil` | UTF-8 text for text shares, otherwise `nil` |
 
-| Field          | Type      | When set                                |
-|----------------|-----------|-----------------------------------------|
-| `status`       | `String`  | Always (`"processing"` or `"complete"`) |
-| `message`      | `String`  | When `processing`                       |
-| `file_id`      | `String`  | When `complete`                         |
-| `file_name`    | `String`  | When `complete`                         |
-| `share_url`    | `String`  | When `complete`                         |
-| `expires_at`   | `String`  | When `complete`                         |
-| `verified_burn`| `Boolean` | When `complete`                         |
+Raises `ApiError` (`410`) if the share was already opened or has expired, `KnfError` if the ciphertext does not
+authenticate (wrong key, modified or truncated data).
 
----
+### `client.list_shares(type: nil, status: nil, limit: nil, offset: nil)` → `Konfidant::ListSharesResponse`
 
-### `client.list_shares(type: nil, status: nil, limit: nil, offset: nil)`
+| Argument | Type      | Description                |
+|----------|-----------|----------------------------|
+| `type`   | `String`  | `"file"` or `"text"`       |
+| `status` | `String`  | `"active"` or `"accessed"` |
+| `limit`  | `Integer` | Page size (default 50)     |
+| `offset` | `Integer` | Pagination offset          |
 
-List all shares for the authenticated organization. All parameters are optional.
+Returns `shares` (`Array<Konfidant::Share>` with `type`, `file_size_bytes`, `created_at`, `expires_at`,
+`accessed_at`, `created_by`) and `pagination` (`total`, `limit`, `offset`, `has_more`). File names are not
+available: the server never sees them.
 
-| Argument | Type     | Description                    |
-|----------|----------|--------------------------------|
-| `type`   | `String` | `"file"` or `"text"`           |
-| `status` | `String` | `"active"` or `"accessed"`     |
-| `limit`  | `Integer`| Page size (default 50)         |
-| `offset` | `Integer`| Pagination offset              |
+### `Konfidant::Knf`
 
-Returns a `Konfidant::ListSharesResponse`:
+The KNF1 implementation is public for advanced use and interoperability:
 
-| Field        | Type                       | Description         |
-|--------------|----------------------------|---------------------|
-| `shares`     | `Array<Konfidant::Share>`  | Share entries       |
-| `pagination` | `Konfidant::Pagination`    | Page metadata       |
+| Method                                                                 | Description                                         |
+|------------------------------------------------------------------------|-----------------------------------------------------|
+| `generate_key` / `encode_key(key)` / `decode_key(str)`                 | 32-byte key; unpadded base64url (43 chars)          |
+| `encrypt(key:, content:, kind:, name: '', mime: '')`                   | Full ciphertext as a binary String                  |
+| `encryptor(...)`                                                       | Streaming IO-like encryptor (`#read`, `#size`)      |
+| `encrypt_text(key:, text:)`                                            | Text share ciphertext                               |
+| `decrypt(key:, ciphertext:)` / `Decryptor.new(key:)#push`/`#finish`    | Verify and decrypt (one-shot or streaming)          |
+| `ciphertext_size(metadata_length:, content_length:)`                   | Exact ciphertext length                             |
+| `build_share_url(download_url, key)` / `parse_share_url(url)`          | Share link helpers                                  |
 
-Each `Konfidant::Share`:
-
-| Field            | Type          | Description             |
-|------------------|---------------|-------------------------|
-| `type`           | `String`      | `"file"` or `"text"`    |
-| `file_name`      | `String`      | Filename or text label  |
-| `file_size_bytes`| `Integer`     | Size in bytes           |
-| `created_at`     | `String`      | Creation datetime       |
-| `expires_at`     | `String`      | Expiry datetime         |
-| `accessed_at`    | `String, nil` | Access datetime, or nil |
-| `created_by`     | `String`      | Email of creator        |
-
-`Konfidant::Pagination`:
-
-| Field      | Type      | Description              |
-|------------|-----------|--------------------------|
-| `total`    | `Integer` | Total number of shares   |
-| `limit`    | `Integer` | Page size used           |
-| `offset`   | `Integer` | Offset used              |
-| `has_more` | `Boolean` | Whether more pages exist |
-
-#### Example: list shares
-
-```ruby
-result = client.list_shares(type: 'file', limit: 10)
-
-result.shares.each do |share|
-  puts "#{share.file_name} — expires #{share.expires_at}"
-end
-
-puts "Total: #{result.pagination.total}"
-puts "More? #{result.pagination.has_more}"
-```
-
----
-
-### `client.share_and_upload_file`
-
-Convenience wrapper that calls `share_file` → `upload_file` → polls `get_file_status` until complete.
-
-```ruby
-client.share_and_upload_file(
-  io:            io,
-  size:          size,
-  filename:      filename,
-  content_type:  content_type,
-  ttl_hours:     ttl_hours,
-  poll_interval: 2,   # seconds between status checks (default: 2)
-  timeout:       60   # max wait for encryption in seconds (default: 60)
-)
-```
-
-| Argument        | Type      | Default | Description                         |
-|-----------------|-----------|---------|-------------------------------------|
-| `io`            | `IO`      | —       | Readable IO object (File, StringIO) |
-| `size`          | `Integer` | —       | File size in bytes                  |
-| `filename`      | `String`  | —       | Filename with extension             |
-| `content_type`  | `String`  | —       | MIME type                           |
-| `ttl_hours`     | `Integer` | —       | Time-to-live in hours               |
-| `poll_interval` | `Numeric` | `2`     | Seconds between status checks       |
-| `timeout`       | `Numeric` | `60`    | Max seconds to wait for encryption  |
-
-Returns a `Konfidant::ShareResult`:
-
-| Field          | Type      | Description                    |
-|----------------|-----------|--------------------------------|
-| `share_url`    | `String`  | One-time download link         |
-| `file_id`      | `String`  | Unique file ID                 |
-| `expires_at`   | `String`  | Expiry datetime                |
-| `verified_burn`| `Boolean` | Whether burn-on-read is active |
-
-Raises `RuntimeError` with `"konfidant: encryption timed out after Ns"` if encryption does not complete
-within `timeout` seconds.
-
-#### Example: share and upload file
-
-```ruby
-file = File.open('confidential.zip', 'rb')
-size = File.size('confidential.zip')
-
-result = client.share_and_upload_file(
-  io:           file,
-  size:         size,
-  filename:     'confidential.zip',
-  content_type: 'application/zip',
-  ttl_hours:    48
-)
-
-puts "Ready to share: #{result.share_url}"
-```
+`encrypt` also accepts `chunk_size:` and a `nonce_prefix:` option that exists **only** for reproducing test
+vectors — never pass `nonce_prefix` in production.
 
 ---
 
 ## Error handling
 
-All API and S3 errors raise `Konfidant::ApiError`.
+All SDK errors inherit from `Konfidant::Error`.
 
 ```ruby
 begin
   client.share_text(text: 'secret', ttl_hours: 1)
 rescue Konfidant::ApiError => e
-  puts e.message     # e.g. "Missing or invalid Authorization header."
-  puts e.status_code # e.g. 401
-  puts e.body.inspect # parsed response body (Hash or String)
+  e.message      # the "error" field of the JSON body, e.g. "upload_incomplete", or "HTTP 500"
+  e.status_code  # e.g. 401
+  e.body         # parsed body (Hash) or raw String
+rescue Konfidant::KnfError => e
+  e.message      # encryption/decryption failure
 end
 ```
 
-### Common error codes
-
-| Status | Meaning                    |
-|--------|----------------------------|
-| `400`  | Bad request / invalid body |
-| `401`  | Missing or invalid API key |
-| `403`  | Insufficient API key scope |
-| `404`  | Resource not found         |
+| Status | Meaning                                   |
+|--------|-------------------------------------------|
+| `400`  | Bad request / invalid body                |
+| `401`  | Missing or invalid API key                |
+| `403`  | Insufficient API key scope                |
+| `404`  | Resource not found                        |
+| `409`  | `upload_incomplete` on complete           |
+| `410`  | Share already opened or expired           |
 
 ---
 
 ## Development
 
 ```bash
-bundle install    # install dependencies
-bundle exec rspec # run tests
+bundle install
+bundle exec rspec
 ```
 
-### Requirements
-
-- Ruby >= 3.2.0
-- No runtime dependencies (uses stdlib `net/http`, `uri`, `json`)
+`spec/fixtures/knf1-test-vectors.json` holds the cross-SDK KNF1 test vectors; the specs reproduce every ciphertext
+byte for byte.

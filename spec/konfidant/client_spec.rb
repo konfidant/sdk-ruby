@@ -1,24 +1,33 @@
 RSpec.describe Konfidant::Client do
-  let(:base_url)   { 'http://api.test' }
-  let(:client)     { described_class.new(api_key: 'test-key', base_url: base_url) }
-  let(:json_ct)    { { 'Content-Type' => 'application/json' } }
+  let(:base_url)     { 'http://api.test' }
+  let(:client)       { described_class.new(api_key: 'test-key', base_url: base_url) }
+  let(:json_ct)      { { 'Content-Type' => 'application/json' } }
+  let(:upload_url)   { 'http://storage.test/bucket/abc123?X-Amz-Signature=sig' }
+  let(:download_url) { 'https://download.konfidant.app/#t=tok%2Ben' }
+  let(:upload_headers) do
+    { 'Content-Type' => 'application/octet-stream', 'x-amz-meta-organization-id' => 'org-1' }
+  end
+  let(:empty_list) do
+    { 'shares' => [], 'pagination' => { 'total' => 0, 'limit' => 50, 'offset' => 0, 'has_more' => false } }
+  end
 
   def stub_api(method, path, status:, body:)
     stub_request(method, "#{base_url}#{path}")
       .to_return(status: status, body: body.to_json, headers: json_ct)
   end
 
-  def presigned_response(upload_url: 'http://s3.test/upload')
-    {
-      'upload_url' => upload_url,
-      'file_key'   => 'abc123.zip',
-      'poll_url'   => "#{base_url}/api/v1/files/abc123.zip/status",
-      'metadata_headers' => {
-        'x-amz-meta-user-id'         => 'user-1',
-        'x-amz-meta-ttl-hours'       => '48',
-        'x-amz-meta-organization-id' => 'org-1'
-      }
-    }
+  def upload_response(file_key: 'abc123')
+    { 'upload_url' => upload_url, 'file_key' => file_key, 'upload_headers' => upload_headers,
+      'upload_expires_in' => 900 }
+  end
+
+  def complete_response
+    { 'download_url' => download_url, 'file_id' => 'file-1', 'expires_at' => '2026-10-05T00:00:00Z',
+      'verified_burn' => true }
+  end
+
+  def key_from(share_url)
+    Konfidant::Knf.decode_key(share_url[/&k=([A-Za-z0-9_-]{43})\z/, 1])
   end
 
   # ---------------------------------------------------------------------------
@@ -36,26 +45,22 @@ RSpec.describe Konfidant::Client do
 
     it 'strips trailing slash from base_url' do
       c = described_class.new(api_key: 'k', base_url: 'https://example.com/')
-      stub_request(:get, 'https://example.com/api/v1/shares').to_return(
-        status: 200,
-        body:   { 'shares' => [], 'pagination' => { 'total' => 0, 'limit' => 50, 'offset' => 0, 'has_more' => false } }.to_json,
-        headers: json_ct
-      )
+      stub_request(:get, 'https://example.com/api/v1/shares')
+        .to_return(status: 200, body: empty_list.to_json, headers: json_ct)
       expect { c.list_shares }.not_to raise_error
     end
 
     it 'defaults to production base URL' do
       c = described_class.new(api_key: 'k')
-      stub_request(:get, 'https://www.konfidant.app/api/v1/shares').to_return(
-        status: 200,
-        body:   { 'shares' => [], 'pagination' => { 'total' => 0, 'limit' => 50, 'offset' => 0, 'has_more' => false } }.to_json,
-        headers: json_ct
-      )
+      stub_request(:get, 'https://www.konfidant.app/api/v1/shares')
+        .to_return(status: 200, body: empty_list.to_json, headers: json_ct)
       expect { c.list_shares }.not_to raise_error
     end
 
     it 'accepts nil http_timeout to disable timeout' do
-      expect { described_class.new(api_key: 'k', http_timeout: nil) }.not_to raise_error
+      c = described_class.new(api_key: 'k', base_url: base_url, http_timeout: nil)
+      stub_api(:get, '/api/v1/shares', status: 200, body: empty_list)
+      expect { c.list_shares }.not_to raise_error
     end
   end
 
@@ -64,59 +69,180 @@ RSpec.describe Konfidant::Client do
   # ---------------------------------------------------------------------------
 
   describe '#share_text' do
-    let(:expected_response) do
-      {
-        'text_id'      => 'abc',
-        'share_url'    => 'https://download.konfidant.app?t=tok',
-        'expires_at'   => '2026-06-01 00:00:00',
-        'verified_burn' => true
-      }
+    let(:text_response) do
+      { 'download_url' => download_url, 'text_id' => 'txt-1', 'expires_at' => '2026-10-05T00:00:00Z' }
     end
 
-    it 'POST /api/v1/texts with correct body and auth header' do
-      stub = stub_request(:post, "#{base_url}/api/v1/texts")
-        .with(
-          body:    { text: 'Secret', ttl_hours: 24 }.to_json,
-          headers: { 'Authorization' => 'Bearer test-key', 'Content-Type' => 'application/json' }
-        )
-        .to_return(status: 201, body: expected_response.to_json, headers: json_ct)
+    it 'sends only KNF1 ciphertext (standard base64) with auth and ttl' do
+      sent = nil
+      stub_request(:post, "#{base_url}/api/v1/texts")
+        .with(headers: { 'Authorization' => 'Bearer test-key', 'Content-Type' => 'application/json' })
+        .with { |req| sent = JSON.parse(req.body) }
+        .to_return(status: 201, body: text_response.to_json, headers: json_ct)
 
-      result = client.share_text(text: 'Secret', ttl_hours: 24)
+      result = client.share_text(text: 'db-password: hunter2', ttl_hours: 48)
 
-      expect(stub).to have_been_requested
-      expect(result.text_id).to eq('abc')
-      expect(result.share_url).to eq('https://download.konfidant.app?t=tok')
-      expect(result.verified_burn).to be(true)
+      expect(sent.keys).to contain_exactly('ciphertext', 'ttl_hours')
+      expect(sent['ttl_hours']).to eq(48)
+      expect(sent['ciphertext']).to match(%r{\A[A-Za-z0-9+/]+=*\z})
+      ciphertext = sent['ciphertext'].unpack1('m0')
+      expect(ciphertext).to start_with('KNF1')
+      expect(ciphertext).not_to include('hunter2')
+      expect(Konfidant::Knf.decrypt(key: key_from(result.share_url), ciphertext: ciphertext).text)
+        .to eq('db-password: hunter2')
     end
 
-    it 'returns a ShareTextResponse' do
-      stub_api(:post, '/api/v1/texts', status: 201, body: expected_response)
-      result = client.share_text(text: 'x', ttl_hours: 1)
-      expect(result).to be_a(Konfidant::ShareTextResponse)
+    it 'returns a TextShare whose share_url carries the key in the fragment' do
+      stub_api(:post, '/api/v1/texts', status: 201, body: text_response)
+      result = client.share_text(text: 'secret')
+
+      expect(result).to be_a(Konfidant::TextShare)
+      expect(result.share_url).to match(%r{\Ahttps://download\.konfidant\.app/#t=tok%2Ben&k=[A-Za-z0-9_-]{43}\z})
+      expect(result.text_id).to eq('txt-1')
+      expect(result.expires_at).to eq('2026-10-05T00:00:00Z')
+    end
+
+    it 'never sends the key to the server' do
+      sent = nil
+      stub_request(:post, "#{base_url}/api/v1/texts")
+        .with { |req| sent = req.body }
+        .to_return(status: 201, body: text_response.to_json, headers: json_ct)
+      result = client.share_text(text: 'secret')
+      encoded_key = result.share_url.split('&k=').last
+      expect(sent).not_to include(encoded_key)
+      expect(sent).not_to include(encoded_key.tr('-_', '+/'))
+    end
+
+    it 'omits ttl_hours when not given' do
+      stub_request(:post, "#{base_url}/api/v1/texts")
+        .with { |req| !JSON.parse(req.body).key?('ttl_hours') }
+        .to_return(status: 201, body: text_response.to_json, headers: json_ct)
+      expect { client.share_text(text: 'x') }.not_to raise_error
+    end
+
+    it 'accepts a null text_id' do
+      stub_api(:post, '/api/v1/texts', status: 201, body: text_response.merge('text_id' => nil))
+      expect(client.share_text(text: 'x').text_id).to be_nil
     end
 
     it 'raises ApiError on 401' do
-      stub_api(:post, '/api/v1/texts', status: 401, body: { 'error' => 'Missing or invalid Authorization header.' })
-      expect { client.share_text(text: 'x', ttl_hours: 1) }
-        .to raise_error(Konfidant::ApiError) { |e|
-          expect(e.status_code).to eq(401)
-          expect(e.message).to eq('Missing or invalid Authorization header.')
-        }
+      stub_api(:post, '/api/v1/texts', status: 401, body: { error: 'Missing or invalid Authorization header.' })
+      expect { client.share_text(text: 'secret', ttl_hours: 1) }.to raise_error(Konfidant::ApiError) { |e|
+        expect(e.status_code).to eq(401)
+        expect(e.message).to eq('Missing or invalid Authorization header.')
+      }
     end
 
-    it 'raises ApiError on 400' do
-      stub_api(:post, '/api/v1/texts', status: 400, body: { 'error' => 'Invalid JSON body' })
-      expect { client.share_text(text: '', ttl_hours: 0) }.to raise_error(Konfidant::ApiError)
+    it 'raises ApiError on 400 and exposes the body' do
+      stub_api(:post, '/api/v1/texts', status: 400, body: { error: 'invalid_ciphertext', message: 'Bad KNF1' })
+      expect { client.share_text(text: 'secret', ttl_hours: 1) }.to raise_error(Konfidant::ApiError) { |e|
+        expect(e.message).to eq('invalid_ciphertext')
+        expect(e.body).to eq({ 'error' => 'invalid_ciphertext', 'message' => 'Bad KNF1' })
+      }
     end
 
     it 'falls back to "HTTP {status}" message when body has no error field' do
-      stub_request(:post, "#{base_url}/api/v1/texts")
-        .to_return(status: 500, body: 'Internal Server Error', headers: { 'Content-Type' => 'text/plain' })
-      expect { client.share_text(text: 'x', ttl_hours: 1) }
+      stub_request(:post, "#{base_url}/api/v1/texts").to_return(status: 500, body: 'oops')
+      expect { client.share_text(text: 'secret') }.to raise_error(Konfidant::ApiError, 'HTTP 500')
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Low-level file upload steps
+  # ---------------------------------------------------------------------------
+
+  describe '#create_file_upload' do
+    it 'POSTs only ciphertext_size and ttl_hours' do
+      stub_request(:post, "#{base_url}/api/v1/files")
+        .with(headers: { 'Authorization' => 'Bearer test-key' },
+              body: { ciphertext_size: 1234, ttl_hours: 24 }.to_json)
+        .to_return(status: 201, body: upload_response.to_json, headers: json_ct)
+
+      upload = client.create_file_upload(ciphertext_size: 1234, ttl_hours: 24)
+      expect(upload).to eq(Konfidant::FileUpload.new(upload_url: upload_url, file_key: 'abc123',
+                                                     upload_headers: upload_headers, upload_expires_in: 900,
+                                                     ciphertext_size: 1234))
+    end
+
+    it 'raises ApiError on 413' do
+      stub_api(:post, '/api/v1/files', status: 413, body: { error: 'file_too_large' })
+      expect { client.create_file_upload(ciphertext_size: 10**12) }
+        .to raise_error(Konfidant::ApiError, 'file_too_large')
+    end
+  end
+
+  describe '#upload_ciphertext' do
+    let(:ciphertext) { Konfidant::Knf.encrypt(key: Konfidant::Knf.generate_key, content: 'abc', kind: 'file') }
+    let(:upload) do
+      Konfidant::FileUpload.new(upload_url: upload_url, file_key: 'abc123', upload_headers: upload_headers,
+                                upload_expires_in: 900, ciphertext_size: ciphertext.bytesize)
+    end
+
+    it 'PUTs the bytes with exactly the upload headers and Content-Length' do
+      stub_request(:put, upload_url)
+        .with(body: ciphertext, headers: upload_headers.merge('Content-Length' => ciphertext.bytesize.to_s))
+        .to_return(status: 200)
+      expect(client.upload_ciphertext(upload: upload, ciphertext: ciphertext)).to be_nil
+    end
+
+    it 'does NOT send the Authorization header to the upload URL' do
+      stub_request(:put, upload_url).to_return(status: 200)
+      client.upload_ciphertext(upload: upload, ciphertext: ciphertext)
+      expect(WebMock).to(have_requested(:put, upload_url).with { |req| !req.headers.key?('Authorization') })
+    end
+
+    it 'streams IO-like ciphertext' do
+      stub = stub_request(:put, upload_url).with(body: ciphertext).to_return(status: 200)
+      client.upload_ciphertext(upload: upload, ciphertext: StringIO.new(ciphertext))
+      expect(stub).to have_been_requested
+    end
+
+    it 'defaults Content-Type to application/octet-stream when the server sends none' do
+      stub = stub_request(:put, upload_url)
+             .with(headers: { 'Content-Type' => 'application/octet-stream' })
+             .to_return(status: 200)
+      client.upload_ciphertext(upload: upload.with(upload_headers: {}), ciphertext: ciphertext)
+      expect(stub).to have_been_requested
+    end
+
+    it 'refuses a ciphertext whose size differs from the declared size' do
+      expect { client.upload_ciphertext(upload: upload, ciphertext: "#{ciphertext}x") }
+        .to raise_error(ArgumentError, /created for/)
+      expect(WebMock).not_to have_requested(:put, upload_url)
+    end
+
+    it 'raises ApiError when storage rejects the upload' do
+      stub_request(:put, upload_url).to_return(status: 403, body: '<Error>SignatureDoesNotMatch</Error>')
+      expect { client.upload_ciphertext(upload: upload, ciphertext: ciphertext) }
         .to raise_error(Konfidant::ApiError) { |e|
-          expect(e.status_code).to eq(500)
-          expect(e.message).to eq('HTTP 500')
+          expect(e.status_code).to eq(403)
+          expect(e.message).to eq('file upload failed: HTTP 403')
         }
+    end
+  end
+
+  describe '#complete_file_upload' do
+    it 'POSTs with no body and returns a CompletedUpload' do
+      stub_request(:post, "#{base_url}/api/v1/files/abc123/complete")
+        .with(headers: { 'Authorization' => 'Bearer test-key' }) { |req| req.body.to_s.empty? }
+        .to_return(status: 201, body: complete_response.to_json, headers: json_ct)
+
+      expect(client.complete_file_upload(file_key: 'abc123'))
+        .to eq(Konfidant::CompletedUpload.new(download_url: download_url, file_id: 'file-1',
+                                              expires_at: '2026-10-05T00:00:00Z', verified_burn: true))
+    end
+
+    it 'percent-encodes the file_key' do
+      stub_api(:post, '/api/v1/files/org%2F1%20x/complete', status: 201, body: complete_response)
+      expect { client.complete_file_upload(file_key: 'org/1 x') }.not_to raise_error
+    end
+
+    it 'raises ApiError 409 upload_incomplete' do
+      stub_api(:post, '/api/v1/files/abc123/complete', status: 409, body: { error: 'upload_incomplete' })
+      expect { client.complete_file_upload(file_key: 'abc123') }.to raise_error(Konfidant::ApiError) { |e|
+        expect(e.status_code).to eq(409)
+        expect(e.message).to eq('upload_incomplete')
+      }
     end
   end
 
@@ -125,102 +251,138 @@ RSpec.describe Konfidant::Client do
   # ---------------------------------------------------------------------------
 
   describe '#share_file' do
-    it 'POST /api/v1/files and returns ShareFileResponse' do
-      stub = stub_request(:post, "#{base_url}/api/v1/files")
-        .with(body: { filename: 'doc.pdf', file_size: 1024, ttl_hours: 48 }.to_json)
-        .to_return(status: 202, body: presigned_response.to_json, headers: json_ct)
+    let(:content) { Random.new(1).bytes(3 * 1024 * 1024) }
 
-      result = client.share_file(filename: 'doc.pdf', file_size: 1024, ttl_hours: 48)
-
-      expect(stub).to have_been_requested
-      expect(result).to be_a(Konfidant::ShareFileResponse)
-      expect(result.file_key).to eq('abc123.zip')
-      expect(result.metadata_headers.user_id).to eq('user-1')
-      expect(result.metadata_headers.ttl_hours).to eq('48')
-      expect(result.metadata_headers.organization_id).to eq('org-1')
-    end
-
-    it 'raises ApiError on 401' do
-      stub_api(:post, '/api/v1/files', status: 401, body: { 'error' => 'Unauthorized' })
-      expect { client.share_file(filename: 'x', file_size: 1, ttl_hours: 1) }
-        .to raise_error(Konfidant::ApiError) { |e| expect(e.status_code).to eq(401) }
-    end
-
-    it 'includes upload_url and poll_url in response' do
+    it 'encrypts, uploads, completes and returns a FileShare with the key in the fragment' do
+      declared = nil
+      uploaded = nil
       stub_request(:post, "#{base_url}/api/v1/files")
-        .to_return(status: 202, body: presigned_response.to_json, headers: json_ct)
+        .with { |req| declared = JSON.parse(req.body) }
+        .to_return(status: 201, body: upload_response.to_json, headers: json_ct)
+      stub_request(:put, upload_url)
+        .with(headers: upload_headers) { |req| uploaded = req.body.b }
+        .to_return(status: 200)
+      complete = stub_api(:post, '/api/v1/files/abc123/complete', status: 201, body: complete_response)
 
-      result = client.share_file(filename: 'doc.pdf', file_size: 1024, ttl_hours: 48)
+      result = client.share_file(content: StringIO.new(content), filename: 'report.pdf',
+                                 content_type: 'application/pdf', ttl_hours: 24)
 
-      expect(result.upload_url).to eq('http://s3.test/upload')
-      expect(result.poll_url).to eq("#{base_url}/api/v1/files/abc123.zip/status")
+      expect(result).to be_a(Konfidant::FileShare)
+      expect(result.share_url).to match(%r{\Ahttps://download\.konfidant\.app/#t=tok%2Ben&k=[A-Za-z0-9_-]{43}\z})
+      expect(result.file_id).to eq('file-1')
+      expect(result.expires_at).to eq('2026-10-05T00:00:00Z')
+      expect(result.verified_burn).to be(true)
+      expect(complete).to have_been_requested
+
+      expect(declared).to eq('ciphertext_size' => uploaded.bytesize, 'ttl_hours' => 24)
+      expect(uploaded).not_to include('report.pdf')
+      expect(WebMock).to(have_requested(:put, upload_url).with do |req|
+        req.headers['Content-Length'] == uploaded.bytesize.to_s && !req.headers.key?('Authorization')
+      end)
+
+      decrypted = Konfidant::Knf.decrypt(key: key_from(result.share_url), ciphertext: uploaded)
+      expect(decrypted.kind).to eq('file')
+      expect(decrypted.name).to eq('report.pdf')
+      expect(decrypted.mime).to eq('application/pdf')
+      expect(decrypted.data).to eq(content)
+    end
+
+    it 'accepts a String and an empty content type' do
+      uploaded = nil
+      stub_api(:post, '/api/v1/files', status: 201, body: upload_response)
+      stub_request(:put, upload_url).with { |req| uploaded = req.body.b }.to_return(status: 200)
+      stub_api(:post, '/api/v1/files/abc123/complete', status: 201, body: complete_response)
+
+      result = client.share_file(content: 'hello', filename: 'a.txt')
+      decrypted = Konfidant::Knf.decrypt(key: key_from(result.share_url), ciphertext: uploaded)
+      expect([decrypted.data, decrypted.mime]).to eq(['hello', ''])
+    end
+
+    it 'uses a different key for every share' do
+      stub_api(:post, '/api/v1/files', status: 201, body: upload_response)
+      stub_request(:put, upload_url).to_return(status: 200)
+      stub_api(:post, '/api/v1/files/abc123/complete', status: 201, body: complete_response)
+
+      urls = Array.new(2) { client.share_file(content: 'x', filename: 'a').share_url }
+      expect(urls.uniq.size).to eq(2)
+    end
+
+    it 'rejects a file name over 1024 bytes before any request' do
+      expect { client.share_file(content: 'x', filename: 'a' * 1025) }.to raise_error(Konfidant::KnfError)
+      expect(WebMock).not_to have_requested(:any, /.*/)
+    end
+
+    it 'propagates 409 from complete' do
+      stub_api(:post, '/api/v1/files', status: 201, body: upload_response)
+      stub_request(:put, upload_url).to_return(status: 200)
+      stub_api(:post, '/api/v1/files/abc123/complete', status: 409, body: { error: 'upload_incomplete' })
+      expect { client.share_file(content: 'x', filename: 'a') }
+        .to raise_error(Konfidant::ApiError, 'upload_incomplete')
+    end
+
+    it 'does not complete when the upload fails' do
+      stub_api(:post, '/api/v1/files', status: 201, body: upload_response)
+      stub_request(:put, upload_url).to_return(status: 500)
+      complete = stub_api(:post, '/api/v1/files/abc123/complete', status: 201, body: complete_response)
+      expect { client.share_file(content: 'x', filename: 'a') }.to raise_error(Konfidant::ApiError)
+      expect(complete).not_to have_been_requested
     end
   end
 
   # ---------------------------------------------------------------------------
-  # get_file_status
+  # open_share
   # ---------------------------------------------------------------------------
 
-  describe '#get_file_status' do
-    it 'returns FileStatusResponse with processing status' do
-      stub_api(:get, '/api/v1/files/abc123.zip/status', status: 202,
-               body: { 'status' => 'processing', 'message' => 'Encryption in progress' })
+  describe '#open_share' do
+    let(:key) { Konfidant::Knf.generate_key }
+    let(:share_url) { Konfidant::Knf.build_share_url('https://share.example.com/#t=tok%2Ben', key) }
 
-      result = client.get_file_status('abc123.zip')
-
-      expect(result).to be_a(Konfidant::FileStatusResponse)
-      expect(result.status).to eq('processing')
-      expect(result.message).to eq('Encryption in progress')
+    def stub_download(ciphertext)
+      stub_request(:post, 'https://share.example.com/api/download')
+        .with(body: { t: 'tok+en' }.to_json, headers: { 'Content-Type' => 'application/json' })
+        .to_return(status: 200, body: ciphertext, headers: { 'Content-Type' => 'application/octet-stream' })
     end
 
-    it 'returns FileStatusResponse with complete status' do
-      complete = {
-        'status'        => 'complete',
-        'file_id'       => 'file-1',
-        'file_name'     => 'doc.pdf',
-        'share_url'     => 'https://download.konfidant.app?t=tok',
-        'expires_at'    => '2026-06-01 00:00:00',
-        'verified_burn' => true
+    it 'fetches with the token only and decrypts a text share' do
+      stub_download(Konfidant::Knf.encrypt_text(key: key, text: "hello \u{1F510}"))
+      result = client.open_share(share_url)
+
+      expect(result.kind).to eq('text')
+      expect(result.text).to eq("hello \u{1F510}")
+      expect(result.data).to eq("hello \u{1F510}".b)
+      expect([result.name, result.mime]).to eq(['', ''])
+      expect(WebMock).to(have_requested(:post, 'https://share.example.com/api/download').with do |req|
+        !req.headers.key?('Authorization') && !req.body.include?(Konfidant::Knf.encode_key(key))
+      end)
+    end
+
+    it 'decrypts a multi-chunk file share' do
+      content = Random.new(3).bytes((2 * 1024 * 1024) + 17)
+      stub_download(Konfidant::Knf.encrypt(key: key, content: content, kind: 'file', name: 'ü.bin', mime: 'x/y'))
+      result = client.open_share(share_url)
+
+      expect(result.kind).to eq('file')
+      expect(result.name).to eq('ü.bin')
+      expect(result.mime).to eq('x/y')
+      expect(result.data).to eq(content)
+      expect(result.text).to be_nil
+    end
+
+    it 'raises ApiError 410 when already used or expired' do
+      stub_request(:post, 'https://share.example.com/api/download')
+        .to_return(status: 410, body: { error: 'gone' }.to_json, headers: json_ct)
+      expect { client.open_share(share_url) }.to raise_error(Konfidant::ApiError) { |e|
+        expect(e.status_code).to eq(410)
       }
-      stub_api(:get, '/api/v1/files/abc123.zip/status', status: 200, body: complete)
-
-      result = client.get_file_status('abc123.zip')
-
-      expect(result.status).to eq('complete')
-      expect(result.file_id).to eq('file-1')
-      expect(result.verified_burn).to be(true)
     end
 
-    it 'percent-encodes file_key in path' do
-      stub = stub_request(:get, "#{base_url}/api/v1/files/has%20spaces.zip/status")
-        .to_return(
-          status:  200,
-          body:    { 'status' => 'complete', 'file_id' => 'x', 'file_name' => 'x',
-                     'share_url' => 'x', 'expires_at' => 'x' }.to_json,
-          headers: json_ct
-        )
-
-      client.get_file_status('has spaces.zip')
-
-      expect(stub).to have_been_requested
+    it 'raises KnfError for the wrong key' do
+      stub_download(Konfidant::Knf.encrypt_text(key: Konfidant::Knf.generate_key, text: 'x'))
+      expect { client.open_share(share_url) }.to raise_error(Konfidant::KnfError)
     end
 
-    it 'raises ApiError on 404' do
-      stub_api(:get, '/api/v1/files/nope/status', status: 404, body: { 'error' => 'File not found' })
-      expect { client.get_file_status('nope') }
-        .to raise_error(Konfidant::ApiError) { |e| expect(e.status_code).to eq(404) }
-    end
-
-    it 'processing status has nil share fields' do
-      stub_api(:get, '/api/v1/files/abc123.zip/status', status: 202,
-               body: { 'status' => 'processing', 'message' => 'Encryption in progress' })
-
-      result = client.get_file_status('abc123.zip')
-
-      expect(result.file_id).to be_nil
-      expect(result.file_name).to be_nil
-      expect(result.share_url).to be_nil
-      expect(result.expires_at).to be_nil
+    it 'raises ArgumentError for a link without a key' do
+      expect { client.open_share('https://share.example.com/#t=tok') }.to raise_error(ArgumentError)
     end
   end
 
@@ -229,287 +391,76 @@ RSpec.describe Konfidant::Client do
   # ---------------------------------------------------------------------------
 
   describe '#list_shares' do
-    let(:empty_response) do
-      { 'shares' => [], 'pagination' => { 'total' => 0, 'limit' => 50, 'offset' => 0, 'has_more' => false } }
-    end
-
-    it 'GET /api/v1/shares with no params' do
-      stub = stub_request(:get, "#{base_url}/api/v1/shares")
-        .to_return(status: 200, body: empty_response.to_json, headers: json_ct)
-
-      client.list_shares
-
-      expect(stub).to have_been_requested
-    end
-
-    it 'appends all query params' do
-      stub = stub_request(:get, "#{base_url}/api/v1/shares")
-        .with(query: { 'type' => 'file', 'status' => 'active', 'limit' => '10', 'offset' => '20' })
-        .to_return(status: 200, body: empty_response.to_json, headers: json_ct)
-
-      client.list_shares(type: 'file', status: 'active', limit: 10, offset: 20)
-
-      expect(stub).to have_been_requested
-    end
-
-    it 'returns shares and pagination' do
-      body = {
+    let(:list_response) do
+      {
         'shares' => [
-          {
-            'type'            => 'file',
-            'file_name'       => 'doc.pdf',
-            'file_size_bytes' => 1024,
-            'created_at'      => '2026-05-01T00:00:00.000Z',
-            'expires_at'      => '2026-05-08T00:00:00.000Z',
-            'accessed_at'     => nil,
-            'created_by'      => 'user@example.com'
-          }
+          { 'type' => 'file', 'file_size_bytes' => 2048, 'created_at' => '2026-10-01T00:00:00Z',
+            'expires_at' => '2026-10-03T00:00:00Z', 'accessed_at' => nil, 'created_by' => 'a@example.com' },
+          { 'type' => 'text', 'created_at' => '2026-10-01T00:00:00Z', 'expires_at' => '2026-10-03T00:00:00Z',
+            'accessed_at' => '2026-10-02T00:00:00Z', 'created_by' => nil }
         ],
-        'pagination' => { 'total' => 1, 'limit' => 50, 'offset' => 0, 'has_more' => false }
+        'pagination' => { 'total' => 2, 'limit' => 50, 'offset' => 0, 'has_more' => false }
       }
-      stub_api(:get, '/api/v1/shares', status: 200, body: body)
+    end
 
+    it 'GET /api/v1/shares with auth and no params' do
+      stub = stub_request(:get, "#{base_url}/api/v1/shares")
+             .with(headers: { 'Authorization' => 'Bearer test-key' })
+             .to_return(status: 200, body: empty_list.to_json, headers: json_ct)
+      client.list_shares
+      expect(stub).to have_been_requested
+    end
+
+    it 'appends only the given query params' do
+      stub = stub_api(:get, '/api/v1/shares?type=file&limit=10', status: 200, body: empty_list)
+      client.list_shares(type: 'file', limit: 10)
+      expect(stub).to have_been_requested
+
+      stub = stub_api(:get, '/api/v1/shares?type=text&status=active&limit=5&offset=10', status: 200,
+                                                                                         body: empty_list)
+      client.list_shares(type: 'text', status: 'active', limit: 5, offset: 10)
+      expect(stub).to have_been_requested
+    end
+
+    it 'returns shares (without file names) and pagination' do
+      stub_api(:get, '/api/v1/shares', status: 200, body: list_response)
       result = client.list_shares
 
-      expect(result).to be_a(Konfidant::ListSharesResponse)
-      expect(result.shares.length).to eq(1)
-      expect(result.shares.first.file_name).to eq('doc.pdf')
-      expect(result.shares.first.accessed_at).to be_nil
-      expect(result.pagination.total).to eq(1)
-      expect(result.pagination.has_more).to be(false)
+      expect(result.shares.size).to eq(2)
+      expect(result.shares.first).to eq(
+        Konfidant::Share.new(type: 'file', file_size_bytes: 2048, created_at: '2026-10-01T00:00:00Z',
+                             expires_at: '2026-10-03T00:00:00Z', accessed_at: nil, created_by: 'a@example.com')
+      )
+      expect(result.shares.first).not_to respond_to(:file_name)
+      expect(result.shares.last.accessed_at).to eq('2026-10-02T00:00:00Z')
+      expect(result.pagination).to eq(Konfidant::Pagination.new(total: 2, limit: 50, offset: 0, has_more: false))
     end
 
-    it 'omits absent params from query string' do
-      stub = stub_request(:get, "#{base_url}/api/v1/shares")
-        .with(query: { 'type' => 'text' })
-        .to_return(status: 200, body: empty_response.to_json, headers: json_ct)
-
-      client.list_shares(type: 'text')
-
-      expect(stub).to have_been_requested
-    end
-
-    it 'supports has_more pagination' do
-      body = {
-        'shares'     => [],
-        'pagination' => { 'total' => 100, 'limit' => 10, 'offset' => 0, 'has_more' => true }
-      }
-      stub_request(:get, "#{base_url}/api/v1/shares")
-        .with(query: { 'limit' => '10' })
-        .to_return(status: 200, body: body.to_json, headers: json_ct)
-
-      result = client.list_shares(limit: 10)
-
-      expect(result.pagination.has_more).to be(true)
-      expect(result.pagination.total).to eq(100)
-    end
-
-    it 'raises ApiError on 403 with scope info' do
-      stub_api(:get, '/api/v1/shares', status: 403, body: {
-        'error'            => 'Insufficient permissions',
-        'required_scope'   => 'shares:list',
-        'available_scopes' => ['files:create']
-      })
-      expect { client.list_shares }
-        .to raise_error(Konfidant::ApiError) { |e|
-          expect(e.status_code).to eq(403)
-          expect(e.message).to eq('Insufficient permissions')
-        }
+    it 'raises ApiError on 403' do
+      stub_api(:get, '/api/v1/shares', status: 403, body: { error: 'Insufficient scope' })
+      expect { client.list_shares }.to raise_error(Konfidant::ApiError, 'Insufficient scope')
     end
   end
 
-  # ---------------------------------------------------------------------------
-  # upload_file
-  # ---------------------------------------------------------------------------
-
-  describe '#upload_file' do
-    let(:s3_url)   { 'http://s3.test/upload' }
-    let(:presigned) do
-      Konfidant::ShareFileResponse.new(
-        upload_url:       s3_url,
-        file_key:         'abc123.zip',
-        poll_url:         "#{base_url}/api/v1/files/abc123.zip/status",
-        metadata_headers: Konfidant::FileMetadataHeaders.new(
-          user_id:         'user-1',
-          ttl_hours:       '48',
-          organization_id: 'org-1'
-        )
-      )
-    end
-
-    it 'PUT to upload_url with correct S3 metadata headers' do
-      stub = stub_request(:put, s3_url)
-        .with(
-          body:    'hello',
-          headers: {
-            'Content-Type'               => 'text/plain',
-            'X-Amz-Meta-Organization-Id' => 'org-1',
-            'X-Amz-Meta-Ttl-Hours'       => '48',
-            'X-Amz-Meta-User-Id'         => 'user-1'
-          }
-        )
-        .to_return(status: 200)
-
-      client.upload_file(io: StringIO.new('hello'), size: 5, content_type: 'text/plain', presigned: presigned)
-
-      expect(stub).to have_been_requested
-    end
-
-    it 'does NOT send Konfidant Authorization header to S3' do
-      captured_auth = nil
-      stub_request(:put, s3_url).to_return do |request|
-        captured_auth = request.headers['Authorization']
-        { status: 200 }
+  describe 'removed API' do
+    it 'no longer exposes the plaintext/polling methods' do
+      %i[share_and_upload_file get_file_status upload_file].each do |m|
+        expect(client).not_to respond_to(m)
       end
-
-      client.upload_file(io: StringIO.new('x'), size: 1, content_type: 'text/plain', presigned: presigned)
-
-      expect(captured_auth).to be_nil
-    end
-
-    it 'raises ApiError when S3 returns an error' do
-      stub_request(:put, s3_url).to_return(status: 403, body: 'AccessDenied')
-
-      expect {
-        client.upload_file(io: StringIO.new('x'), size: 1, content_type: 'text/plain', presigned: presigned)
-      }.to raise_error(Konfidant::ApiError) { |e|
-        expect(e.status_code).to eq(403)
-        expect(e.message).to include('file upload failed')
-      }
     end
   end
-
-  # ---------------------------------------------------------------------------
-  # share_and_upload_file
-  # ---------------------------------------------------------------------------
-
-  describe '#share_and_upload_file' do
-    let(:s3_url)  { 'http://s3.test/upload' }
-    let(:presigned) { presigned_response(upload_url: s3_url) }
-    let(:processing) { { 'status' => 'processing', 'message' => 'Encryption in progress' } }
-    let(:complete) do
-      {
-        'status'        => 'complete',
-        'file_id'       => 'file-1',
-        'file_name'     => 'doc.pdf',
-        'share_url'     => 'https://download.konfidant.app?t=tok',
-        'expires_at'    => '2026-06-01 00:00:00',
-        'verified_burn' => true
-      }
-    end
-
-    it 'calls share_file → upload_file → polls until complete' do
-      stub_api(:post, '/api/v1/files', status: 202, body: presigned)
-      stub_request(:put, s3_url).to_return(status: 200)
-      stub_request(:get, "#{base_url}/api/v1/files/abc123.zip/status")
-        .to_return(
-          { status: 202, body: processing.to_json, headers: json_ct },
-          { status: 200, body: complete.to_json,    headers: json_ct }
-        )
-
-      result = client.share_and_upload_file(
-        io:           StringIO.new('data'),
-        size:         4,
-        filename:     'doc.pdf',
-        content_type: 'application/pdf',
-        ttl_hours:    48,
-        poll_interval: 0.01,
-        timeout:      5
-      )
-
-      expect(result).to be_a(Konfidant::ShareResult)
-      expect(result.share_url).to eq('https://download.konfidant.app?t=tok')
-      expect(result.file_id).to eq('file-1')
-      expect(result.verified_burn).to be(true)
-    end
-
-    it 'raises when encryption times out' do
-      stub_api(:post, '/api/v1/files', status: 202, body: presigned)
-      stub_request(:put, s3_url).to_return(status: 200)
-      stub_request(:get, "#{base_url}/api/v1/files/abc123.zip/status")
-        .to_return(status: 202, body: processing.to_json, headers: json_ct)
-
-      expect {
-        client.share_and_upload_file(
-          io:           StringIO.new('data'),
-          size:         4,
-          filename:     'doc.pdf',
-          content_type: 'application/pdf',
-          ttl_hours:    48,
-          poll_interval: 0.01,
-          timeout:      0.05
-        )
-      }.to raise_error(/timed out/)
-    end
-
-    it 'propagates ApiError from share_file' do
-      stub_api(:post, '/api/v1/files', status: 401, body: { 'error' => 'Unauthorized' })
-
-      expect {
-        client.share_and_upload_file(
-          io: StringIO.new('data'), size: 4, filename: 'doc.pdf',
-          content_type: 'application/pdf', ttl_hours: 48
-        )
-      }.to raise_error(Konfidant::ApiError) { |e| expect(e.status_code).to eq(401) }
-    end
-
-    it 'propagates ApiError from upload_file' do
-      stub_api(:post, '/api/v1/files', status: 202, body: presigned)
-      stub_request(:put, s3_url).to_return(status: 403, body: 'AccessDenied')
-
-      expect {
-        client.share_and_upload_file(
-          io: StringIO.new('data'), size: 4, filename: 'doc.pdf',
-          content_type: 'application/pdf', ttl_hours: 48
-        )
-      }.to raise_error(Konfidant::ApiError) { |e| expect(e.status_code).to eq(403) }
-    end
-
-    it 'propagates ApiError from get_file_status' do
-      stub_api(:post, '/api/v1/files', status: 202, body: presigned)
-      stub_request(:put, s3_url).to_return(status: 200)
-      stub_api(:get, '/api/v1/files/abc123.zip/status', status: 500,
-               body: { 'error' => 'Internal Server Error' })
-
-      expect {
-        client.share_and_upload_file(
-          io: StringIO.new('data'), size: 4, filename: 'doc.pdf',
-          content_type: 'application/pdf', ttl_hours: 48, timeout: 5
-        )
-      }.to raise_error(Konfidant::ApiError) { |e| expect(e.status_code).to eq(500) }
-    end
-  end
-
 end
 
-# ---------------------------------------------------------------------------
-# ApiError
-# ---------------------------------------------------------------------------
-
 RSpec.describe Konfidant::ApiError do
-  let(:base_url) { 'http://api.test' }
-  let(:client)   { Konfidant::Client.new(api_key: 'test-key', base_url: base_url) }
-  let(:json_ct)  { { 'Content-Type' => 'application/json' } }
-
   it 'carries status_code, body, and message' do
     err = described_class.new('Unauthorized', 401, { 'error' => 'Unauthorized' })
+    expect(err.message).to eq('Unauthorized')
     expect(err.status_code).to eq(401)
     expect(err.body).to eq({ 'error' => 'Unauthorized' })
-    expect(err.message).to eq('Unauthorized')
-    expect(err).to be_a(StandardError)
   end
 
-  it 'uses error field from JSON body as message' do
-    stub_request(:post, "#{base_url}/api/v1/texts")
-      .to_return(status: 401,
-                 body:   { 'error' => 'Missing or invalid Authorization header.' }.to_json,
-                 headers: json_ct)
-    begin
-      client.share_text(text: 'x', ttl_hours: 1)
-    rescue Konfidant::ApiError => e
-      expect(e.message).to eq('Missing or invalid Authorization header.')
-      expect(e.status_code).to eq(401)
-      expect(e.body).to be_a(Hash)
-    end
+  it 'shares a base class with KnfError' do
+    expect(described_class.ancestors).to include(Konfidant::Error)
+    expect(Konfidant::KnfError.ancestors).to include(Konfidant::Error)
   end
 end
