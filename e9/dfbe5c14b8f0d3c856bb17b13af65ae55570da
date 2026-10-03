@@ -1,0 +1,14 @@
+lib/konfidant/version.rb
+  h_8f86904f171102 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "e9dfbe5c14b8f0d3c856bb17b13af65ae55570da",
+  "prompts": {},
+  "humans": {
+    "h_8f86904f171102": {
+      "author": "msdundar <msdundars@gmail.com>"
+    }
+  }
+}
