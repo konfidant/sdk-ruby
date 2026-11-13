@@ -23,6 +23,10 @@ jobs:
 
     - name: Install gems
       run: bundle install
+      env:
+        # Install exactly what Gemfile.lock pins; fail instead of re-resolving. Scoped to this step only, because
+        # the version bump below changes the gemspec and release-gem's `bundle exec` must be allowed to relock it.
+        BUNDLE_FROZEN: "true"
 
     - name: Set version from tag
       run: |
@@ -35,8 +39,8 @@ jobs:
         touch $HOME/.gem/credentials
         chmod 0600 $HOME/.gem/credentials
         printf -- "---\n:github: ${GEM_HOST_API_KEY}\n" > $HOME/.gem/credentials
-        gem build *.gemspec
-        gem push --KEY github --host https://rubygems.pkg.github.com/${OWNER} *.gem
+        gem build ./*.gemspec
+        gem push --KEY github --host https://rubygems.pkg.github.com/${OWNER} ./*.gem
       env:
         GEM_HOST_API_KEY: "Bearer ${{secrets.GITHUB_TOKEN}}"
         OWNER: ${{ github.repository_owner }}

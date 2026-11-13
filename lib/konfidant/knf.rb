@@ -36,6 +36,7 @@ module Konfidant
     META_LENGTH_PREFIX = 4
     CIPHER             = 'aes-256-gcm'.freeze
     KEY_PATTERN        = /\A[A-Za-z0-9_-]{43}\z/
+    METADATA_TRUNCATED = 'Metadata truncated'.freeze
 
     # Result of a successful decryption. +data+ is a binary String; +kind+ is "text" or "file".
     Decrypted = Data.define(:kind, :name, :mime, :data) do
@@ -47,7 +48,7 @@ module Konfidant
       end
     end
 
-    module_function
+    extend self
 
     # 32 random bytes from the OS CSPRNG. Use a fresh key for every share.
     def generate_key
@@ -165,6 +166,8 @@ module Konfidant
       raise ArgumentError, 'Invalid share URL'
     end
 
+    private
+
     # --- internal helpers --------------------------------------------------------------------------------------
 
     def check_key!(key)
@@ -218,10 +221,10 @@ module Konfidant
     end
 
     def decode_stream(stream)
-      raise KnfError, 'Metadata truncated' if stream.bytesize < META_LENGTH_PREFIX
+      raise KnfError, METADATA_TRUNCATED if stream.bytesize < META_LENGTH_PREFIX
 
       meta_length = stream.byteslice(0, META_LENGTH_PREFIX).unpack1('N')
-      raise KnfError, 'Metadata truncated' if META_LENGTH_PREFIX + meta_length > stream.bytesize
+      raise KnfError, METADATA_TRUNCATED if META_LENGTH_PREFIX + meta_length > stream.bytesize
 
       meta = stream.byteslice(META_LENGTH_PREFIX, meta_length)
       kind, name, mime = decode_metadata(meta)
@@ -230,13 +233,13 @@ module Konfidant
     end
 
     def decode_metadata(meta)
-      raise KnfError, 'Metadata truncated' if meta.bytesize < META_FIXED_SIZE
+      raise KnfError, METADATA_TRUNCATED if meta.bytesize < META_FIXED_SIZE
 
       kind = KINDS.key(meta.getbyte(0))
       raise KnfError, 'Unknown content kind' unless kind
 
       name_length = meta.byteslice(1, 2).unpack1('n')
-      raise KnfError, 'Metadata truncated' if 3 + name_length + 2 > meta.bytesize
+      raise KnfError, METADATA_TRUNCATED if 3 + name_length + 2 > meta.bytesize
 
       mime_length = meta.byteslice(3 + name_length, 2).unpack1('n')
       raise KnfError, 'Metadata length mismatch' unless META_FIXED_SIZE + name_length + mime_length == meta.bytesize
@@ -267,9 +270,6 @@ module Konfidant
     def blank?(value)
       value.nil? || value.empty?
     end
-
-    private_class_method :check_key!, :check_chunk_size!, :build_header, :parse_header, :chunk_nonce, :seal,
-                         :open_sealed, :decode_stream, :decode_metadata, :utf8_bytes, :utf8_string, :blank?
 
     # Streaming KNF1 encryptor with an IO-like read interface. #size is the exact ciphertext length, known up front
     # so it can be declared to the server (ciphertext_size) and sent as Content-Length.

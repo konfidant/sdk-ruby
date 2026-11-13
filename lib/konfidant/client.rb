@@ -9,6 +9,11 @@ module Konfidant
   # Konfidant API client. All content is encrypted locally (KNF1) before it leaves this process; the key is only
   # ever placed in the returned share link's URL fragment and is never sent to Konfidant.
   class Client
+    CONTENT_TYPE = 'Content-Type'
+    JSON_MIME    = 'application/json'
+    BINARY_MIME  = 'application/octet-stream'
+    private_constant :CONTENT_TYPE, :JSON_MIME, :BINARY_MIME
+
     def initialize(api_key:, base_url: nil, http_timeout: DEFAULT_TIMEOUT)
       raise ArgumentError, 'api_key is required' if api_key.nil? || api_key.empty?
 
@@ -78,7 +83,7 @@ module Konfidant
       req = Net::HTTP::Put.new(uri)
       upload.upload_headers.each { |name, value| req[name] = value.to_s }
       # Only when the server did not specify one: Net::HTTP would otherwise send application/x-www-form-urlencoded.
-      req['Content-Type'] ||= 'application/octet-stream'
+      req[CONTENT_TYPE] ||= BINARY_MIME
       req['Content-Length'] = size.to_s
       if ciphertext.is_a?(String)
         req.body = ciphertext.b
@@ -124,8 +129,8 @@ module Konfidant
       origin, token, key = Knf.parse_share_url(share_url)
       uri = URI.parse("#{origin}/api/download")
       req = Net::HTTP::Post.new(uri)
-      req['Content-Type'] = 'application/json'
-      req['Accept']       = 'application/octet-stream'
+      req[CONTENT_TYPE] = JSON_MIME
+      req['Accept']     = BINARY_MIME
       req.body = JSON.generate({ t: token })
 
       ciphertext = handle_response(perform(uri, req))
@@ -177,7 +182,7 @@ module Konfidant
       req = method == :get ? Net::HTTP::Get.new(uri) : Net::HTTP::Post.new(uri)
       req['Authorization'] = "Bearer #{@api_key}"
       if payload
-        req['Content-Type'] = 'application/json'
+        req[CONTENT_TYPE] = JSON_MIME
         req.body = JSON.generate(payload)
       elsif method == :post
         req.body = ''
@@ -188,7 +193,7 @@ module Konfidant
 
     def handle_response(resp)
       content_type = resp['content-type'] || ''
-      body = content_type.include?('application/json') ? parse_json(resp.body) : resp.body
+      body = content_type.include?(JSON_MIME) ? parse_json(resp.body) : resp.body
 
       return body if success?(resp)
 
