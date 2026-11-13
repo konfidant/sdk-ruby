@@ -32,7 +32,7 @@ jobs:
         env:
           CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
         run: |
-          bash <(curl -Ls https://coverage.codacy.com/get.sh) report \
+          bash <(curl --proto '=https' --tlsv1.2 -fLsS https://coverage.codacy.com/get.sh) report \
             -l Ruby \
             --force-coverage-parser lcov \
             -r coverage/lcov.info
