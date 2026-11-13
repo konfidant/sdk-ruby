@@ -1,0 +1,26 @@
+lib/konfidant/client.rb
+  s_50533dea7b2ed9::t_6233551cc71576 12-16,86,132-133,185,196
+.github/workflows/publish.yml
+  s_50533dea7b2ed9::t_6233551cc71576 26-29
+  s_50533dea7b2ed9::t_4be5f659834b84 42-43
+lib/konfidant/knf.rb
+  s_50533dea7b2ed9::t_4be5f659834b84 39,51,169-170,224,227,236,242
+.github/workflows/test.yml
+  s_50533dea7b2ed9::t_6233551cc71576 35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "50e01a3e400cd266895887bed3ffd2c2392104d5",
+  "prompts": {},
+  "sessions": {
+    "s_50533dea7b2ed9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51e810e5-7795-49a9-973e-3fca77ae4d31",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "msdundar <msdundars@gmail.com>"
+    }
+  }
+}
