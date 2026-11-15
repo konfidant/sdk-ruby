@@ -442,6 +442,42 @@ RSpec.describe Konfidant::Client do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # me
+  # ---------------------------------------------------------------------------
+
+  describe '#me' do
+    let(:me_response) do
+      {
+        'organization' => { 'id' => 'org_1', 'name' => 'Acme' },
+        'api_key' => { 'name' => 'Slack', 'environment' => 'live', 'scopes' => %w[texts:create files:create],
+                       'rate_limit_per_minute' => 60, 'expires_at' => nil },
+        'limits' => { 'max_ttl_hours' => 168, 'max_file_size_mb' => 100 }
+      }
+    end
+
+    it 'GET /api/v1/me with auth and returns the key info' do
+      stub = stub_request(:get, "#{base_url}/api/v1/me")
+             .with(headers: { 'Authorization' => 'Bearer test-key' })
+             .to_return(status: 200, body: me_response.to_json, headers: json_ct)
+
+      info = client.me
+
+      expect(stub).to have_been_requested
+      expect(info.organization).to eq(Konfidant::Organization.new(id: 'org_1', name: 'Acme'))
+      expect(info.api_key).to eq(
+        Konfidant::ApiKeyInfo.new(name: 'Slack', environment: 'live', scopes: %w[texts:create files:create],
+                                  rate_limit_per_minute: 60, expires_at: nil)
+      )
+      expect(info.limits).to eq(Konfidant::PlanLimits.new(max_ttl_hours: 168, max_file_size_mb: 100))
+    end
+
+    it 'raises ApiError on 401' do
+      stub_api(:get, '/api/v1/me', status: 401, body: { error: 'Invalid API key' })
+      expect { client.me }.to raise_error(Konfidant::ApiError, 'Invalid API key')
+    end
+  end
+
   describe 'removed API' do
     it 'no longer exposes the plaintext/polling methods' do
       %i[share_and_upload_file get_file_status upload_file].each do |m|

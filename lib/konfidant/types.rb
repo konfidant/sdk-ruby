@@ -24,4 +24,15 @@ module Konfidant
   Pagination = Data.define(:total, :limit, :offset, :has_more)
 
   ListSharesResponse = Data.define(:shares, :pagination)
+
+  # Result of Client#me: the key's organization, the key itself and the plan's share limits.
+  Organization = Data.define(:id, :name)
+
+  # +expires_at+ is nil if the key never expires.
+  ApiKeyInfo = Data.define(:name, :environment, :scopes, :rate_limit_per_minute, :expires_at)
+
+  # +max_file_size_mb+ is the largest file before encryption.
+  PlanLimits = Data.define(:max_ttl_hours, :max_file_size_mb)
+
+  KeyInfo = Data.define(:organization, :api_key, :limits)
 end

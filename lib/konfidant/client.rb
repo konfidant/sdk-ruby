@@ -122,6 +122,27 @@ module Konfidant
       )
     end
 
+    # Describes the API key: its organization, scopes and rate limit, and the plan's share limits. Use it to validate
+    # a key without creating a share. Needs no scope and does not count as an API share.
+    def me
+      body = api_request(:get, '/api/v1/me')
+      key = body['api_key']
+      KeyInfo.new(
+        organization: Organization.new(id: body['organization']['id'], name: body['organization']['name']),
+        api_key:      ApiKeyInfo.new(
+          name:                  key['name'],
+          environment:           key['environment'],
+          scopes:                key['scopes'],
+          rate_limit_per_minute: key['rate_limit_per_minute'],
+          expires_at:            key['expires_at']
+        ),
+        limits:       PlanLimits.new(
+          max_ttl_hours:    body['limits']['max_ttl_hours'],
+          max_file_size_mb: body['limits']['max_file_size_mb']
+        )
+      )
+    end
+
     # Recipient side: fetches the ciphertext behind +share_url+ (consuming its single-use token) and decrypts it
     # locally. Only the token is sent; the key and the API key are not. Raises ApiError (410) if the share was
     # already opened or has expired, KnfError if decryption fails.

@@ -151,6 +151,12 @@ Returns `shares` (`Array<Konfidant::Share>` with `type`, `file_size_bytes`, `cre
 `accessed_at`, `created_by`) and `pagination` (`total`, `limit`, `offset`, `has_more`). File names are not
 available: the server never sees them.
 
+### `client.me` → `Konfidant::KeyInfo`
+
+Describes the API key without creating a share: `organization` (`id`, `name`), `api_key` (`name`, `environment`,
+`scopes`, `rate_limit_per_minute`, `expires_at`) and the plan's `limits` (`max_ttl_hours`, `max_file_size_mb`). It
+needs no scope and does not count as an API share. Use it to check a key before storing it.
+
 ### `Konfidant::Knf`
 
 The KNF1 implementation is public for advanced use and interoperability:
