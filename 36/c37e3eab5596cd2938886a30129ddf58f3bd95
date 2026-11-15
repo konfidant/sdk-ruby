@@ -1,0 +1,24 @@
+lib/konfidant/version.rb
+  h_8f86904f171102 2
+Gemfile.lock
+  h_8f86904f171102 4,58
+README.md
+  h_8f86904f171102 154-159
+lib/konfidant/client.rb
+  h_8f86904f171102 125-145
+lib/konfidant/types.rb
+  h_8f86904f171102 27-37
+spec/konfidant/client_spec.rb
+  h_8f86904f171102 445-480
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "36c37e3eab5596cd2938886a30129ddf58f3bd95",
+  "prompts": {},
+  "humans": {
+    "h_8f86904f171102": {
+      "author": "msdundar <msdundars@gmail.com>"
+    }
+  }
+}
